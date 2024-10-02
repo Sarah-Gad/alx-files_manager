@@ -1,55 +1,60 @@
-import mongoDBCore from 'mongodb/lib/core';
+/* eslint-disable import/no-named-as-default */
+/* eslint-disable no-unused-vars */
 import sha1 from 'sha1';
+import { Request } from 'express';
+import mongoDBCore from 'mongodb/lib/core';
 import dbClient from './db';
 import redisClient from './redis';
 
-export async function fromAuth(req) {
-  const auth = req.headers.authorization || null;
-  if (!auth) {
-    return null;
-  }
-  const parts = auth.split(' ');
-  if (parts.length !== 2 || parts[0] !== 'Basic') {
-    return null;
-  }
-  const val = Buffer.from(parts[1], 'base64').toString('utf-8');
-  const [email, ...rest] = val.split(':');
-  const password = rest.join(':');
-  const user = await dbClient.cli.db().collection('users').findOne({ email });
-  return (!user || sha1(password) !== user.password) ? null : user;
-}
+/**
+ * Fetches the user from the Authorization header in the given request object.
+ * @param {Request} req The Express request object.
+ * @returns {Promise<{_id: ObjectId, email: string, password: string}>}
+ */
+export const getUserFromAuthorization = async (req) => {
+  const authorization = req.headers.authorization || null;
 
-export async function fromToken(req) {
-  const auth = req.headers['x-token'];
-
-  if (!auth) {
+  if (!authorization) {
     return null;
   }
-  const uId = await redisClient.get(`auth_${auth}`);
-  if (!uId) {
+  const authorizationParts = authorization.split(' ');
+
+  if (authorizationParts.length !== 2 || authorizationParts[0] !== 'Basic') {
     return null;
   }
-  const user = await dbClient.cli.db().collection('users')
-    .findOne({ _id: new mongoDBCore.BSON.ObjectId(uId) });
-  return user || null;
-}
+  const token = Buffer.from(authorizationParts[1], 'base64').toString();
+  const sepPos = token.indexOf(':');
+  const email = token.substring(0, sepPos);
+  const password = token.substring(sepPos + 1);
+  const user = await (await dbClient.usersCollection()).findOne({ email });
 
-export const middleFromAuth = async (req, res, next) => {
-  const user = await fromAuth(req);
-  if (!user) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
+  if (!user || sha1(password) !== user.password) {
+    return null;
   }
-  req.user = user;
-  next();
+  return user;
 };
 
-export const middleFromToken = async (req, res, next) => {
-  const user = await fromToken(req);
-  if (!user) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
+/**
+ * Fetches the user from the X-Token header in the given request object.
+ * @param {Request} req The Express request object.
+ * @returns {Promise<{_id: ObjectId, email: string, password: string}>}
+ */
+export const getUserFromXToken = async (req) => {
+  const token = req.headers['x-token'];
+
+  if (!token) {
+    return null;
   }
-  req.user = user;
-  next();
+  const userId = await redisClient.get(`auth_${token}`);
+  if (!userId) {
+    return null;
+  }
+  const user = await (await dbClient.usersCollection())
+    .findOne({ _id: new mongoDBCore.BSON.ObjectId(userId) });
+  return user || null;
+};
+
+export default {
+  getUserFromAuthorization: async (req) => getUserFromAuthorization(req),
+  getUserFromXToken: async (req) => getUserFromXToken(req),
 };
